@@ -57,24 +57,24 @@ Expected:
 ```
 
 ### Authentication required (401)
-![Authentication_required](evidence\Authentication_required.png)
+![Authentication_required](evidence/Authentication_required.png)
 
 ### API Test (with authentication)
-![With_API_key_works](evidence\With_API_key_works.png)
+![With_API_key_works](evidence/With_API_key_works.png)
 
 
 ### Rate limiting (429 after 10 requests)
-![rate_limiting](evidence\rate_limiting.png)
+![rate_limiting](evidence/rate_limiting.png)
 
 
 ### VARIOUS EVIDENCE IN FOLDER \Evidence
-![Stuff](evidence\dashboard.png)
+![Stuff](evidence/dashboard.png)
 
-![Stuff](evidence\docs.png)
+![Stuff](evidence/docs.png)
 
-![Stuff](evidence\health.png)
+![Stuff](evidence/health.png)
 
-![Stuff](evidence\not_allowed.png)
+![Stuff](evidence/not_allowed.png)
 
 ## Self-Test Results (12/06/2026)
 
