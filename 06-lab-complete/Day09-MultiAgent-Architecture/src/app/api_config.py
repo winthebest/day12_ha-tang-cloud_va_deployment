@@ -1,22 +1,19 @@
-"""Production config — 12-Factor: tất cả từ environment variables."""
-import os
+"""Production API config — tách khỏi app.config (agent Day09)."""
 import logging
+import os
 from dataclasses import dataclass, field
 
 
 @dataclass
-class Settings:
+class ApiSettings:
     host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: int(os.getenv("PORT", "8000")))
     environment: str = field(default_factory=lambda: os.getenv("ENVIRONMENT", "development"))
     debug: bool = field(default_factory=lambda: os.getenv("DEBUG", "false").lower() == "true")
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
-    app_name: str = field(default_factory=lambda: os.getenv("APP_NAME", "Production AI Agent"))
+    app_name: str = field(default_factory=lambda: os.getenv("APP_NAME", "Day09 Multi-Agent API"))
     app_version: str = field(default_factory=lambda: os.getenv("APP_VERSION", "1.0.0"))
-
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
 
     agent_api_key: str = field(default_factory=lambda: os.getenv("AGENT_API_KEY", "dev-key-change-me"))
     allowed_origins: list = field(
@@ -34,22 +31,16 @@ class Settings:
 
     def validate(self):
         logger = logging.getLogger(__name__)
-        if self.environment == "production":
-            if self.agent_api_key == "dev-key-change-me":
-                raise ValueError("AGENT_API_KEY must be set in production!")
-            if not _is_valid_redis_url(self.redis_url):
-                raise ValueError(
-                    "REDIS_URL is missing or invalid in production. "
-                    "On Railway: add Redis service → Variables → reference REDIS_PRIVATE_URL "
-                    "or REDIS_URL from the Redis service."
-                )
-        if not self.openai_api_key:
-            logger.warning("OPENAI_API_KEY not set — using mock LLM")
+        if self.environment == "production" and self.agent_api_key == "dev-key-change-me":
+            raise ValueError("AGENT_API_KEY must be set in production!")
+        if self.environment == "production" and not _is_valid_redis_url(self.redis_url):
+            raise ValueError("REDIS_URL is missing or invalid in production!")
+        if not os.getenv("GOOGLE_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+            logger.warning("No LLM API key set — agent may fail on /ask")
         return self
 
 
 def _resolve_redis_url() -> str:
-    """Railway exposes REDIS_PRIVATE_URL (internal) and REDIS_URL (public)."""
     for key in ("REDIS_PRIVATE_URL", "REDIS_URL", "REDISURL"):
         value = os.getenv(key, "").strip()
         if value:
@@ -58,11 +49,8 @@ def _resolve_redis_url() -> str:
 
 
 def _is_valid_redis_url(url: str) -> bool:
-    if not url or not url.strip():
+    if not url or url == "redis://localhost:6379/0":
         return False
-    if url == "redis://localhost:6379/0":
-        return False
-    # Must have a host after redis://
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)
@@ -71,4 +59,4 @@ def _is_valid_redis_url(url: str) -> bool:
         return False
 
 
-settings = Settings().validate()
+api_settings = ApiSettings().validate()

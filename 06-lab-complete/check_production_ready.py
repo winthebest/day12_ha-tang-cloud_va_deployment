@@ -4,12 +4,12 @@ Production Readiness Checker
 Tự động kiểm tra project có đủ điều kiện deploy chưa.
 Chạy: python check_production_ready.py
 
+Target: Day09-MultiAgent-Architecture/
+
 Output: checklist với ✅ / ❌ cho từng item.
 """
 import os
 import sys
-import json
-import subprocess
 
 
 def check(name: str, passed: bool, detail: str = "") -> dict:
@@ -20,13 +20,15 @@ def check(name: str, passed: bool, detail: str = "") -> dict:
 
 def run_checks():
     results = []
-    base = os.path.dirname(__file__)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.join(script_dir, "Day09-MultiAgent-Architecture")
 
     print("\n" + "=" * 55)
     print("  Production Readiness Check — Day 12 Lab")
+    print("  Target: Day09-MultiAgent-Architecture/")
     print("=" * 55)
 
-    # ── Files ──────────────────���───────────────────
+    # ── Files ──────────────────────────────────────
     print("\n📁 Required Files")
     results.append(check("Dockerfile exists",
                          os.path.exists(os.path.join(base, "Dockerfile"))))
@@ -37,23 +39,22 @@ def run_checks():
     results.append(check(".env.example exists",
                          os.path.exists(os.path.join(base, ".env.example"))))
     results.append(check("requirements.txt exists",
-                         os.path.exists(os.path.join(base, "requirements.txt"))))
+                         os.path.exists(os.path.join(base, "src", "requirements.txt"))))
     results.append(check("railway.toml or render.yaml exists",
                          os.path.exists(os.path.join(base, "railway.toml")) or
                          os.path.exists(os.path.join(base, "render.yaml"))))
 
-    # ── Security ──────────────────────────────────���
+    # ── Security ─────────────────────────────────
     print("\n🔒 Security")
 
-    # Check .env not tracked
     env_file = os.path.join(base, ".env")
     gitignore = os.path.join(base, ".gitignore")
-    root_gitignore = os.path.join(base, "..", ".gitignore")
+    root_gitignore = os.path.join(script_dir, "..", ".gitignore")
 
     env_ignored = False
     for gi in [gitignore, root_gitignore]:
         if os.path.exists(gi):
-            content = open(gi).read()
+            content = open(gi, encoding="utf-8", errors="ignore").read()
             if ".env" in content:
                 env_ignored = True
                 break
@@ -61,12 +62,11 @@ def run_checks():
                          env_ignored,
                          "Add .env to .gitignore!" if not env_ignored else ""))
 
-    # Check no hardcoded secrets in code
     secrets_found = []
-    for f in ["app/main.py", "app/config.py"]:
+    for f in ["src/app/main.py", "src/app/config.py"]:
         fpath = os.path.join(base, f)
         if os.path.exists(fpath):
-            content = open(fpath).read()
+            content = open(fpath, encoding="utf-8", errors="ignore").read()
             for bad in ["sk-", "password123", "hardcoded"]:
                 if bad in content:
                     secrets_found.append(f"{f}:{bad}")
@@ -74,11 +74,11 @@ def run_checks():
                          len(secrets_found) == 0,
                          str(secrets_found) if secrets_found else ""))
 
-    # ── API Endpoints ────────────────────────────��─
+    # ── API Endpoints ──────────────────────────────
     print("\n🌐 API Endpoints (code check)")
-    main_py = os.path.join(base, "app", "main.py")
+    main_py = os.path.join(base, "src", "app", "main.py")
     if os.path.exists(main_py):
-        content = open(main_py).read()
+        content = open(main_py, encoding="utf-8", errors="ignore").read()
         results.append(check("/health endpoint defined",
                              '"/health"' in content or "'/health'" in content))
         results.append(check("/ready endpoint defined",
@@ -92,13 +92,13 @@ def run_checks():
         results.append(check("Structured logging (JSON)",
                              "json.dumps" in content or '"event"' in content))
     else:
-        results.append(check("app/main.py exists", False, "Create app/main.py!"))
+        results.append(check("src/app/main.py exists", False, "Create src/app/main.py!"))
 
     # ── Docker ─────────────────────────────────────
     print("\n🐳 Docker")
     dockerfile = os.path.join(base, "Dockerfile")
     if os.path.exists(dockerfile):
-        content = open(dockerfile).read()
+        content = open(dockerfile, encoding="utf-8", errors="ignore").read()
         results.append(check("Multi-stage build",
                              "AS builder" in content or "AS runtime" in content))
         results.append(check("Non-root user",
@@ -110,13 +110,13 @@ def run_checks():
 
     dockerignore = os.path.join(base, ".dockerignore")
     if os.path.exists(dockerignore):
-        content = open(dockerignore).read()
+        content = open(dockerignore, encoding="utf-8", errors="ignore").read()
         results.append(check(".dockerignore covers .env",
                              ".env" in content))
         results.append(check(".dockerignore covers __pycache__",
                              "__pycache__" in content))
 
-    # ── Summary ───────────────────────────────────���
+    # ── Summary ────────────────────────────────────
     passed = sum(1 for r in results if r["passed"])
     total = len(results)
     pct = round(passed / total * 100)

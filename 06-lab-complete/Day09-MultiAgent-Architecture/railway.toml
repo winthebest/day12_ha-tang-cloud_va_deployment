@@ -2,8 +2,7 @@
 builder = "DOCKERFILE"
 
 [deploy]
-# Dùng Dockerfile CMD — Railway inject PORT qua env, expand bằng sh -c
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

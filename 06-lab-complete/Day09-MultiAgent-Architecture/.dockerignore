@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.git/
+*.md
+.DS_Store
+src/artifacts/
+src/.chroma/

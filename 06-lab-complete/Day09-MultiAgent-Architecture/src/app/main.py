@@ -1,8 +1,7 @@
 """
-Production AI Agent — Day 12 Lab Complete
-
-Stateless design: conversation history, rate limits, and budgets in Redis.
+Production API — bọc Day09 ShoppingAssistant (LangGraph multi-agent).
 """
+import asyncio
 import json
 import logging
 import os
@@ -16,15 +15,15 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.api_config import api_settings
 from app.auth import verify_api_key
-from app.config import settings
-from app.cost_guard import check_budget, estimate_cost, get_spending
+from app.cost_guard import check_budget, estimate_cost
+from app.graph import ShoppingAssistant
 from app.rate_limiter import check_rate_limit
 from app.redis_store import append_history, get_history, ping
-from utils.mock_llm import ask as llm_ask
 
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    level=getattr(logging, api_settings.log_level.upper(), logging.INFO),
     format='{"ts":"%(asctime)s","lvl":"%(levelname)s","msg":"%(message)s"}',
 )
 logger = logging.getLogger(__name__)
@@ -33,26 +32,23 @@ START_TIME = time.time()
 _is_ready = False
 _in_flight_requests = 0
 _request_count = 0
-_error_count = 0
 INSTANCE_ID = os.getenv("INSTANCE_ID", f"instance-{os.getpid()}")
+_assistant: ShoppingAssistant | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _is_ready
+    global _is_ready, _assistant
     logger.info(json.dumps({
         "event": "startup",
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
+        "app": api_settings.app_name,
+        "version": api_settings.app_version,
+        "environment": api_settings.environment,
         "instance_id": INSTANCE_ID,
     }))
     if not ping():
-        raise RuntimeError(
-            "Redis is required but not reachable. "
-            f"Check REDIS_URL / REDIS_PRIVATE_URL (current host configured: "
-            f"{'yes' if settings.redis_url else 'no'})"
-        )
+        raise RuntimeError("Redis is required but not reachable. Check REDIS_URL.")
+    _assistant = ShoppingAssistant()
     _is_ready = True
     logger.info(json.dumps({"event": "ready", "instance_id": INSTANCE_ID}))
 
@@ -62,26 +58,22 @@ async def lifespan(app: FastAPI):
     timeout = 30
     elapsed = 0
     while _in_flight_requests > 0 and elapsed < timeout:
-        logger.info(json.dumps({
-            "event": "shutdown_wait",
-            "in_flight": _in_flight_requests,
-        }))
+        logger.info(json.dumps({"event": "shutdown_wait", "in_flight": _in_flight_requests}))
         time.sleep(1)
         elapsed += 1
     logger.info(json.dumps({"event": "shutdown_complete", "instance_id": INSTANCE_ID}))
 
 
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
+    title=api_settings.app_name,
+    version=api_settings.app_version,
     lifespan=lifespan,
-    docs_url="/docs" if settings.environment != "production" else None,
-    redoc_url=None,
+    docs_url="/docs" if api_settings.environment != "production" else None,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=api_settings.allowed_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
@@ -89,17 +81,12 @@ app.add_middleware(
 
 @app.middleware("http")
 async def request_middleware(request: Request, call_next):
-    global _request_count, _error_count, _in_flight_requests
+    global _request_count, _in_flight_requests
     start = time.time()
     _request_count += 1
     _in_flight_requests += 1
     try:
         response: Response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-Instance-Id"] = INSTANCE_ID
-        if "server" in response.headers:
-            del response.headers["server"]
         duration = round((time.time() - start) * 1000, 1)
         logger.info(json.dumps({
             "event": "request",
@@ -110,9 +97,6 @@ async def request_middleware(request: Request, call_next):
             "instance_id": INSTANCE_ID,
         }))
         return response
-    except Exception:
-        _error_count += 1
-        raise
     finally:
         _in_flight_requests -= 1
 
@@ -125,7 +109,6 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     question: str
     answer: str
-    model: str
     user_id: str
     turn: int
     history_count: int
@@ -133,58 +116,40 @@ class AskResponse(BaseModel):
     timestamp: str
 
 
-@app.get("/", tags=["Info"])
-def root():
-    return {
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
-        "instance_id": INSTANCE_ID,
-        "endpoints": {
-            "ask": "POST /ask (requires X-API-Key)",
-            "health": "GET /health",
-            "ready": "GET /ready",
-        },
-    }
-
-
 @app.post("/ask", response_model=AskResponse, tags=["Agent"])
-async def ask_agent(
-    body: AskRequest,
-    request: Request,
-    _key: str = Depends(verify_api_key),
-):
+async def ask_agent(body: AskRequest, _key: str = Depends(verify_api_key)):
+    if _assistant is None:
+        raise HTTPException(status_code=503, detail="Agent not ready")
+
     check_rate_limit(body.user_id)
 
     input_tokens = len(body.question.split()) * 2
     check_budget(body.user_id, estimate_cost(input_tokens, 0))
 
-    history = get_history(body.user_id)
     logger.info(json.dumps({
         "event": "agent_call",
         "user_id": body.user_id,
         "q_len": len(body.question),
-        "history_turns": len(history),
-        "client": str(request.client.host) if request.client else "unknown",
         "instance_id": INSTANCE_ID,
     }))
 
-    answer = llm_ask(body.question)
+    result = await asyncio.to_thread(_assistant.ask, body.question)
+    answer = result.get("final_answer") or "(no answer)"
+
     output_tokens = len(answer.split()) * 2
     check_budget(body.user_id, estimate_cost(0, output_tokens))
 
     append_history(body.user_id, "user", body.question)
     append_history(body.user_id, "assistant", answer)
-    updated_history = get_history(body.user_id)
-    user_turns = sum(1 for m in updated_history if m["role"] == "user")
+    updated = get_history(body.user_id)
+    user_turns = sum(1 for m in updated if m["role"] == "user")
 
     return AskResponse(
         question=body.question,
         answer=answer,
-        model=settings.llm_model,
         user_id=body.user_id,
         turn=user_turns,
-        history_count=len(updated_history),
+        history_count=len(updated),
         served_by=INSTANCE_ID,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
@@ -193,15 +158,12 @@ async def ask_agent(
 @app.get("/health", tags=["Operations"])
 def health():
     redis_ok = ping()
-    status = "ok" if redis_ok else "degraded"
     return {
-        "status": status,
-        "version": settings.app_version,
-        "environment": settings.environment,
+        "status": "ok" if redis_ok else "degraded",
+        "version": api_settings.app_version,
+        "redis_connected": redis_ok,
         "instance_id": INSTANCE_ID,
         "uptime_seconds": round(time.time() - START_TIME, 1),
-        "total_requests": _request_count,
-        "redis_connected": redis_ok,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -215,20 +177,6 @@ def ready():
     return {"ready": True, "instance_id": INSTANCE_ID}
 
 
-@app.get("/metrics", tags=["Operations"])
-def metrics(user_id: str, _key: str = Depends(verify_api_key)):
-    spending = get_spending(user_id)
-    return {
-        "instance_id": INSTANCE_ID,
-        "uptime_seconds": round(time.time() - START_TIME, 1),
-        "total_requests": _request_count,
-        "error_count": _error_count,
-        "monthly_spending_usd": round(spending, 6),
-        "monthly_budget_usd": settings.monthly_budget_usd,
-        "budget_used_pct": round(spending / settings.monthly_budget_usd * 100, 1),
-    }
-
-
 def _handle_signal(signum, _frame):
     logger.info(json.dumps({"event": "signal", "signum": signum, "instance_id": INSTANCE_ID}))
 
@@ -238,16 +186,10 @@ signal.signal(signal.SIGINT, _handle_signal)
 
 
 if __name__ == "__main__":
-    logger.info(json.dumps({
-        "event": "boot",
-        "host": settings.host,
-        "port": settings.port,
-        "instance_id": INSTANCE_ID,
-    }))
     uvicorn.run(
         "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
+        host=api_settings.host,
+        port=api_settings.port,
+        reload=api_settings.debug,
         timeout_graceful_shutdown=30,
     )
